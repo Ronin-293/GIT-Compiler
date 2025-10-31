@@ -33,15 +33,15 @@ on:
           - wip-noksu
       VERSION:
         description: 'Zip Version'
-        default: '2.0'
+        default: '2.0.1'
         required: false
       ANYKERNEL_URL:
-        description: 'AnyKernel Url (leave blank if you dont want AnyKernel)'
+        description: 'AnyKernel Url'
         default: 'https://github.com/SenseiiX/AnyKernel3'
         required: false
       CUSTOM_SED:
         description: 'Custom Kernel Version'
-        default: '-FusionX-2.0'
+        default: '-FusionX-2.0.1'
         required: false
       CLANG_TOOLCHAIN:
         description: 'Clang toolchain selection'
