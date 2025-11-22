@@ -1,0 +1,96 @@
+name: Build MUNCH
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-munch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential git curl wget bison flex zip bc cpio libssl-dev ccache \
+            python-is-python3 unzip
+
+      - name: Prepare Proton Clang
+        run: |
+          mkdir -p proton-clang
+          cd proton-clang
+          wget -q https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.zip -O proton.zip
+          unzip -q proton.zip
+          cd ..
+          echo "CLANG_PATH=$(pwd)/proton-clang/proton-clang-20210522/bin" >> $GITHUB_ENV
+
+      - name: Show toolchain & environment info
+        run: |
+          echo "Using CLANG_PATH=$CLANG_PATH"
+          $CLANG_PATH/clang --version || true
+          echo "Runner cores: $(nproc)"
+          echo "Workspace: $GITHUB_WORKSPACE"
+
+      # ----------------------------
+      # Build: NO-KSU (AOSP + MIUI)
+      # ----------------------------
+      - name: Build: AOSP+MIUI (NO KSU)
+        working-directory: .
+        run: |
+          set -e
+          export PATH="${CLANG_PATH}:$PATH"
+          chmod +x build.sh
+          echo "Running: bash build.sh munch"
+          bash build.sh munch
+
+      - name: Upload: NO-KSU zips (AOSP + MIUI)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: munch-no-ksu-zips
+          path: |
+            Kernel_AOSP_munch_*NoKernelSU*.zip
+            Kernel_MIUI_munch_*NoKernelSU*.zip
+            *.zip
+
+      # Clean workspace artifacts before next build
+      - name: Clean build outputs before KSU build
+        run: |
+          rm -rf out/ anykernel/ || true
+          rm -f Kernel_AOSP_munch_*NoKernelSU*.zip Kernel_MIUI_munch_*NoKernelSU*.zip || true
+
+      # ----------------------------
+      # Build: WITH KSU (AOSP + MIUI)
+      # ----------------------------
+      - name: Build: AOSP+MIUI (WITH KSU)
+        working-directory: .
+        run: |
+          set -e
+          export PATH="${CLANG_PATH}:$PATH"
+          chmod +x build.sh
+          echo "Running: bash build.sh munch ksu"
+          bash build.sh munch ksu
+
+      - name: Upload: KSU zips (AOSP + MIUI)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: munch-ksu-zips
+          path: |
+            Kernel_AOSP_munch_*SukiSU*.zip
+            Kernel_MIUI_munch_*SukiSU*.zip
+            *.zip
+
+      - name: List produced files (for debugging)
+        if: always()
+        run: |
+          echo "=== Root zips ==="
+          ls -lah *.zip || true
+          echo "=== out folder ==="
+          ls -lah out/ || true
