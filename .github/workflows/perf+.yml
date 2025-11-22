@@ -1,4 +1,4 @@
-name: Build MUNCH Kernel (4-in-1: AOSP/MIUI × KSU/NO-KSU)
+name: Build MUNCH
 
 on:
   workflow_dispatch:
@@ -95,4 +95,3 @@ jobs:
           ls -lah *.zip || true
           echo "=== out folder ==="
           ls -lah out/ || true
-
