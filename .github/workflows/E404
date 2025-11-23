@@ -1,0 +1,78 @@
+name: KVSNR113-Kernel-AnyKernel
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_TREE:
+        description: 'Kernel Repo URL'
+        default: 'https://github.com/kvsnr113/xiaomi_sm8250_kernel'
+      KERNEL_BRANCH:
+        description: 'Kernel Branch'
+        default: 'main'
+      CLANG_TOOLCHAIN:
+        description: 'Clang Toolchain'
+        default: 'aosp clang 20'
+        type: choice
+        options:
+          - aosp clang 20
+          - aosp clang 21
+          - proton clang
+      ANYKERNEL_URL:
+        description: 'AnyKernel3 Repo URL'
+        default: 'https://github.com/kvsnr113/AnyKernel3'
+      ZIP_VERSION:
+        description: 'Zip Version'
+        default: '1.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ARCH: arm64
+      SUBARCH: ARM64
+
+    steps:
+      - name: Install Dependencies
+        run: sudo apt update && sudo apt install -y flex libncurses6 bc bison build-essential zip cpio libssl-dev ccache python-is-python3 unzip
+
+      - name: Checkout Kernel
+        run: git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.event.inputs.KERNEL_TREE }} kernel
+
+      - name: Setup Clang
+        run: |
+          if [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 20" ]]; then
+            wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -O clang.tar.gz
+            mkdir -p clang
+            tar -xf clang.tar.gz -C clang
+          elif [[ "${{ github.event.inputs.CLANG_TOOLCHAIN }}" == "aosp clang 21" ]]; then
+            wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/508ea7dd0d8f681904d0422e98af9613aaabf180/clang-r574158.tar.gz -O clang.tar.gz
+            mkdir -p clang
+            tar -xf clang.tar.gz -C clang
+          else
+            wget https://github.com/kdrag0n/proton-clang/archive/refs/tags/20210522.zip -O proton-clang.zip
+            unzip proton-clang.zip
+            mv proton-clang-20210522 clang
+          fi
+          echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
+
+      - name: Build Kernel
+        run: |
+          export PATH=${{ env.CLANG_PATH }}:$PATH
+          cd kernel
+          make O=out vendor/munch_defconfig
+          make O=out CC=clang -j$(nproc)
+
+      - name: Clone AnyKernel3
+        run: git clone --depth=1 ${{ github.event.inputs.ANYKERNEL_URL }} AnyKernel3
+
+      - name: Prepare AnyKernel ZIP
+        run: |
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          cd AnyKernel3
+          ZIP_NAME="Kernel-${{ github.event.inputs.ZIP_VERSION }}-$(date +%Y%m%d)"
+          zip -r9 ../${ZIP_NAME}.zip * -x .git* .github*
+
+      - name: Upload Flashable Kernel ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}.zip
