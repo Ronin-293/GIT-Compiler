@@ -1,0 +1,128 @@
+name: NOSUSFS Kernel Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_TREE:
+        description: 'Kernel Tree URL'
+        default: 'https://github.com/kvsnr113/xiaomi_sm8250_kernel'
+      KERNEL_BRANCH:
+        description: 'Kernel Branch (nosusfs)'
+        default: 'nosusfs'
+      VERSION:
+        description: 'Zip Version'
+        default: '1.0.0'
+      CLANG_TOOLCHAIN:
+        description: 'Clang Toolchain'
+        default: 'neutron'
+        type: choice
+        options:
+          - neutron
+      FAST_BUILD:
+        description: 'Enable Fast Build'
+        default: 'true'
+        type: boolean
+      ANYKERNEL_URL:
+        description: 'AnyKernel3 repo URL'
+        default: 'https://github.com/kvsnr113/AnyKernel3'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      UPLOAD_TO_RELEASE: false
+
+    steps:
+      - name: Install Dependencies
+        run: sudo apt update && sudo apt install -y flex libncurses6 wget unzip zstd
+
+      - name: Cache Clang Toolchain
+        uses: actions/cache@v4
+        with:
+          path: clang-neutron
+          key: clang-toolchain-neutron-${{ hashFiles('**/clang-version') }}
+          restore-keys: clang-toolchain-neutron-
+
+      - name: Download & Extract Clang (if not cached)
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst -O clang.tar.zst
+          mkdir -p clang-neutron
+          unzstd -d clang.tar.zst
+          tar -xf clang.tar -C clang-neutron
+          echo "neutron-10032024" > clang-version
+
+      - name: Set Clang Path
+        run: echo "CLANG_PATH=$(pwd)/clang-neutron/bin" >> $GITHUB_ENV
+
+      - name: Checkout Kernel
+        run: git clone --depth=1 --branch ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.event.inputs.KERNEL_TREE }} kernel_tree
+
+      - name: Build Kernel
+        run: |
+          cd kernel_tree
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER="senx"
+          export KBUILD_BUILD_HOST="ubuntu"
+          export KBUILD_BUILD_TIMESTAMP="$(date -u)"
+          
+          # Check if defconfig exists
+          if [ ! -f arch/arm64/configs/vendor/munch_defconfig ]; then
+            echo "❌ Error: vendor/munch_defconfig not found!"
+            exit 1
+          fi
+
+          make O=out vendor/munch_defconfig
+          
+          # Fast build option
+          if [ "${{ github.event.inputs.FAST_BUILD }}" = "true" ]; then
+            echo "⚡ Fast build enabled"
+            make O=out CC=clang -j$(nproc) CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error"
+          else
+            make O=out CC=clang -j$(nproc --all) CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
+          fi
+
+          # Check if Image exists
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "❌ Error: Image not found!"
+            exit 1
+          fi
+          cp out/arch/arm64/boot/Image ../Image
+
+          # Check if DTB exists
+          if [ -f out/arch/arm64/boot/dtb.img ]; then
+            cp out/arch/arm64/boot/dtb.img ../MUNCH-dtb.img
+          else
+            echo "⚠️ DTB not found, skipping..."
+          fi
+
+          # Check if DTBO exists
+          if [ -f out/arch/arm64/boot/dtbo.img ]; then
+            cp out/arch/arm64/boot/dtbo.img ../MUNCH-dtbo.img
+          else
+            echo "⚠️ DTBO not found, skipping..."
+          fi
+
+      - name: Clone AnyKernel3
+        run: git clone --recursive --depth=1 ${{ github.event.inputs.ANYKERNEL_URL }} AnyKernel3
+
+      - name: Copy Kernel Files to AnyKernel3
+        run: |
+          cp ../Image AnyKernel3/
+          cp ../MUNCH-dtb.img AnyKernel3/ || echo "DTB not found, skipping copy"
+          cp ../MUNCH-dtbo.img AnyKernel3/ || echo "DTBO not found, skipping copy"
+
+      - name: Create Flashable ZIP
+        run: |
+          cd AnyKernel3
+          ZIP_NAME=NOSUSFS-Kernel-${{ github.event.inputs.VERSION }}-$(date +%Y%m%d)
+          zip -r9 ../$ZIP_NAME.zip * -x .git* .github*
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
+      - name: Upload Kernel ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}.zip
