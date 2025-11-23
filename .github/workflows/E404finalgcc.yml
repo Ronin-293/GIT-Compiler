@@ -1,0 +1,89 @@
+name: Simple-MUNCH-Kernel-Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Dependencies
+        run: sudo apt install -y flex libncurses6 bison build-essential git wget unzip zstd
+
+      - name: Download GCC Toolchain
+        run: |
+          echo "⬇️ Downloading aarch64 GCC..."
+          wget https://mirrors.edge.kernel.org/pub/tools/crosstool/files/bin/x86_64/11.2.0/x86_64-gcc-11.2.0-nolibc-aarch64-linux.tar.xz -O gcc.tar.xz
+          mkdir -p gcc
+          tar -xf gcc.tar.xz -C gcc --strip-components=1
+
+          echo "⬇️ Downloading ARM32 GCC..."
+          wget https://mirrors.edge.kernel.org/pub/tools/crosstool/files/bin/x86_64/11.2.0/x86_64-gcc-11.2.0-nolibc-arm-linux-gnueabi.tar.xz -O gcc32.tar.xz
+          mkdir -p gcc32
+          tar -xf gcc32.tar.xz -C gcc32 --strip-components=1
+
+          echo "GCC_PATH_A64=$(pwd)/gcc/bin" >> $GITHUB_ENV
+          echo "GCC_PATH_A32=$(pwd)/gcc32/bin" >> $GITHUB_ENV
+
+      - name: Checkout Kernel Tree
+        run: |
+          git clone --depth=1 https://github.com/kvsnr113/xiaomi_sm8250_kernel -b gcc-staging2 kernel_tree
+
+      - name: Cherry-pick SUSFS-BPF Patch (Auto-Resolve)
+        run: |
+          cd kernel_tree
+          git config user.email "bot@example.com"
+          git config user.name "Build Bot"
+
+          git remote add susfs https://github.com/Kenskuyy-Prjkt/fusionX_sm8250
+          git fetch susfs wip-susfs-bpf
+          git cherry-pick 2e62da287ea8c5436f2ca5770d6b3dafcf2c0ccc -X theirs || true
+
+          if [ -d ".git/rebase-apply" ] || [ -f ".git/CHERRY_PICK_HEAD" ]; then
+            git diff --name-only --diff-filter=U | xargs git checkout --theirs
+            git add .
+            git cherry-pick --continue || git commit -m "Auto-resolved SUSFS-BPF cherry-pick using theirs"
+          fi
+
+      - name: Checkout AnyKernel3
+        run: git clone --depth=1 https://github.com/kvsnr113/AnyKernel3 AnyKernel3
+
+      - name: Clean Non-Munch Files from AnyKernel3
+        run: |
+          cd AnyKernel3
+          echo "Cleaning extra files..."
+          find . -type f ! -name 'MUNCH-Image' ! -name 'MUNCH-dtb' ! -name 'MUNCH-dtbo.img' \
+                 ! -name 'anykernel.sh' ! -path './META-INF/*' -delete
+
+      - name: Build Kernel (GCC)
+        run: |
+          cd kernel_tree
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER="lordputin"
+          export KBUILD_BUILD_HOST="ubuntu"
+
+          export CROSS_COMPILE=${{ env.GCC_PATH_A64 }}/aarch64-linux-
+          export CROSS_COMPILE_ARM32=${{ env.GCC_PATH_A32 }}/arm-linux-
+
+          make O=out vendor/munch_defconfig
+
+          echo "⚙️ Compiling kernel with GCC..."
+          make -j$(nproc) O=out
+
+          ls -lh out/arch/arm64/boot/
+
+          cp out/arch/arm64/boot/Image ../AnyKernel3/MUNCH-Image
+
+      - name: Create Flashable ZIP
+        run: |
+          cd AnyKernel3
+          zip -r9 "../MUNCH-Image.zip" * -x "*.git*" "*.github*"
+
+      - name: Upload Final Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: MUNCH-Image
+          path: MUNCH-Image.zip
