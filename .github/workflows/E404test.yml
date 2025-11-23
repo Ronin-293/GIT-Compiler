@@ -1,0 +1,67 @@
+name: Simple-MUNCH-Kernel-Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Dependencies
+        run: sudo apt install -y flex libncurses6 bison build-essential git wget unzip zstd
+
+      - name: Download Neutron Clang
+        run: |
+          wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst -O clang.tar.zst
+          mkdir -p clang
+          unzstd -d clang.tar.zst
+          tar -xf clang.tar -C clang
+          echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
+
+      - name: Checkout Kernel Tree
+        run: git clone --depth=1 https://github.com/kvsnr113/xiaomi_sm8250_kernel -b nosusfs kernel_tree
+
+      - name: Checkout AnyKernel3
+        run: git clone --depth=1 https://github.com/kvsnr113/AnyKernel3 AnyKernel3
+
+      - name: Clean Non-Munch Files from AnyKernel3
+        run: |
+          cd AnyKernel3
+          echo "🧹 Removing non-MUNCH files..."
+          find . -type f ! -name 'Image' ! -name 'MUNCH-Image' ! -name 'MUNCH-dtb' ! -name 'MUNCH-dtbo.img' \
+                 ! -name 'anykernel.sh' ! -path './META-INF/*' -delete
+          echo "Remaining files:"
+          ls -lh
+
+      - name: Build Kernel
+        run: |
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=ARM64
+          export KBUILD_BUILD_USER="senx"
+          export KBUILD_BUILD_HOST="ubuntu"
+
+          cd kernel_tree
+          make O=out vendor/munch_defconfig
+
+          echo "⚙️ Compiling kernel..."
+          make O=out CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+
+          echo "📁 Output:"
+          ls -lh out/arch/arm64/boot/
+
+          # Copy kernel and rename inside AnyKernel3
+          cp out/arch/arm64/boot/Image ../AnyKernel3/MUNCH-Image
+
+      - name: Create Flashable ZIP
+        run: |
+          cd AnyKernel3
+          zip -r9 "../MUNCH-Image.zip" * -x "*.git*" "*.github*"
+          echo "Flashable ZIP created as MUNCH-Image.zip"
+
+      - name: Upload Final Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: MUNCH-Image
+          path: MUNCH-Image.zip
