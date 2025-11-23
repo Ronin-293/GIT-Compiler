@@ -1,0 +1,108 @@
+name: MUNCH-NOSUSFS-Build-With-Custom-Anykernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ARCH: arm64
+      SUBARCH: ARM64
+
+    steps:
+      - name: Install packages
+        run: |
+          sudo apt update
+          sudo apt install -y flex libncurses6 bc bison build-essential git wget unzip zip zstd
+
+      - name: Checkout kernel tree
+        run: |
+          git clone --depth=1 -b nosusfs https://github.com/kvsnr113/xiaomi_sm8250_kernel kernel_tree
+          echo "Kernel checked out to: $PWD/kernel_tree"
+
+      - name: Download & extract Neutron Clang
+        run: |
+          wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst -O clang.tar.zst
+          mkdir -p clang-neutron
+          unzstd -d clang.tar.zst
+          tar -xf clang.tar -C clang-neutron
+          echo "CLANG_PATH=$(pwd)/clang-neutron/bin" >> $GITHUB_ENV
+          echo "Clang prepared at $(pwd)/clang-neutron/bin"
+
+      - name: Build kernel (vendor/munch_defconfig)
+        env:
+          PATH: ${{ env.CLANG_PATH }}:${{ env.PATH }}
+        run: |
+          set -e
+          cd kernel_tree
+
+          echo "Using defconfig: arch/arm64/configs/vendor/munch_defconfig"
+          make O=out vendor/munch_defconfig
+
+          echo "Starting kernel build (clang)..."
+          make O=out CC=clang -j$(nproc --all) CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
+
+          echo "Build finished. Listing boot directory:"
+          ls -lah out/arch/arm64/boot || true
+
+          echo "Kernel Image Path:"
+          echo "$PWD/out/arch/arm64/boot/Image"
+
+          cp out/arch/arm64/boot/Image ../Image || ( echo "ERROR: Image missing!" && exit 1 )
+
+      - name: Clone custom AnyKernel3 (kvsnr113)
+        run: |
+          git clone --depth=1 https://github.com/kvsnr113/AnyKernel3 AnyKernel3
+          echo "AnyKernel3 repo contents:"
+          ls -lah AnyKernel3 || true
+
+      - name: Prepare AnyKernel3 (copy Image + ensure DTB/DTBO exist)
+        run: |
+          set -e
+          ANYKERNEL_DIR=AnyKernel3
+
+          if [ ! -f Image ]; then
+            echo "ERROR: Kernel Image not found!"
+            exit 1
+          fi
+
+          cp Image "$ANYKERNEL_DIR/" || exit 1
+
+          FOUND_DTB="$(find $ANYKERNEL_DIR -maxdepth 3 -type f -name 'MUNCH-dtb' | head -n1 || true)"
+          FOUND_DTBO="$(find $ANYKERNEL_DIR -maxdepth 3 -type f -name 'MUNCH-dtbo.img' | head -n1 || true)"
+
+          if [ -n "$FOUND_DTB" ]; then
+            echo "Found MUNCH-dtb: $FOUND_DTB"
+            cp "$FOUND_DTB" "$ANYKERNEL_DIR/MUNCH-dtb"
+          else
+            echo "⚠️ Warning: MUNCH-dtb missing"
+          fi
+
+          if [ -n "$FOUND_DTBO" ]; then
+            echo "Found MUNCH-dtbo.img: $FOUND_DTBO"
+            cp "$FOUND_DTBO" "$ANYKERNEL_DIR/MUNCH-dtbo.img"
+          else
+            echo "⚠️ Warning: MUNCH-dtbo.img missing"
+          fi
+
+          echo "Final AnyKernel3 contents:"
+          ls -lah $ANYKERNEL_DIR
+
+      - name: Create flashable ZIP
+        run: |
+          set -e
+          cd AnyKernel3
+          [ -f anykernel.sh ] && chmod +x anykernel.sh || true
+
+          ZIP_NAME="MUNCH-${{ github.run_number }}-$(date +%Y%m%d%H%M)"
+          echo "Creating zip: ${ZIP_NAME}.zip"
+          zip -r9 ../${ZIP_NAME}.zip * -x .git* .github*
+          echo "ZIP generated at ../${ZIP_NAME}.zip"
+
+      - name: Upload flashable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: munch-flashable-zip
+          path: |
+            *.zip
