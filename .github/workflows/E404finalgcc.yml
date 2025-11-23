@@ -1,0 +1,103 @@
+name: Simple-MUNCH-Kernel-Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Dependencies
+        run: sudo apt install -y flex libncurses6 bison build-essential git wget unzip zstd
+
+      - name: Download Neutron Clang
+        run: |
+          wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst -O clang.tar.zst
+          mkdir -p clang
+          unzstd -d clang.tar.zst
+          tar -xf clang.tar -C clang
+          echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
+
+      - name: Checkout Kernel Tree
+        run: |
+          git clone --depth=1 https://github.com/kvsnr113/xiaomi_sm8250_kernel -b nosusfs kernel_tree
+
+      - name: Cherry-pick SUSFS-BPF Patch (Auto-Resolve)
+        run: |
+          cd kernel_tree
+          git config user.email "bot@example.com"
+          git config user.name "Build Bot"
+
+          git remote add susfs https://github.com/Kenskuyy-Prjkt/fusionX_sm8250
+          git fetch susfs wip-susfs-bpf
+
+          git cherry-pick 2e62da287ea8c5436f2ca5770d6b3dafcf2c0ccc -X theirs || true
+
+          if [ -d ".git/rebase-apply" ] || [ -f ".git/CHERRY_PICK_HEAD" ]; then
+            git diff --name-only --diff-filter=U | xargs git checkout --theirs
+            git add .
+            git cherry-pick --continue || git commit -m "Auto-resolved SUSFS-BPF cherry-pick using theirs"
+          fi
+
+      - name: Patch defconfig (enable modules + disable signature)
+        run: |
+          cd kernel_tree/arch/arm64/configs/vendor
+
+          sed -i '/CONFIG_MODULES/d' munch_defconfig
+          sed -i '/CONFIG_MODULE_UNLOAD/d' munch_defconfig
+          sed -i '/CONFIG_MODVERSIONS/d' munch_defconfig
+          sed -i '/CONFIG_MODULE_SIG/d' munch_defconfig
+          sed -i '/CONFIG_SYSTEM_TRUSTED_KEYS/d' munch_defconfig
+          sed -i '/CONFIG_SYSTEM_REVOCATION_KEYS/d' munch_defconfig
+
+         cat <<EOF >> munch_defconfig
+         CONFIG_MODULES=y
+         CONFIG_MODULE_UNLOAD=y
+         CONFIG_MODVERSIONS=y
+
+         # Disable module signature verification
+         # CONFIG_MODULE_SIG is not set
+         # CONFIG_MODULE_SIG_ALL is not set
+         # CONFIG_MODULE_SIG_FORCE is not set
+         CONFIG_SYSTEM_TRUSTED_KEYS=""
+         CONFIG_SYSTEM_REVOCATION_KEYS=""
+         EOF
+
+         echo "✔ defconfig patched"
+
+      - name: Checkout AnyKernel3
+        run: git clone --depth=1 https://github.com/kvsnr113/AnyKernel3 AnyKernel3
+
+      - name: Clean Non-Munch Files from AnyKernel3
+        run: |
+          cd AnyKernel3
+          find . -type f ! -name 'Image' ! -name 'MUNCH-Image' ! -name 'MUNCH-dtb' ! -name 'MUNCH-dtbo.img' \
+                 ! -name 'anykernel.sh' ! -path './META-INF/*' -delete
+          ls -lh
+
+      - name: Build Kernel
+        run: |
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=ARM64
+          export KBUILD_BUILD_USER="lordputin"
+          export KBUILD_BUILD_HOST="ubuntu"
+
+          cd kernel_tree
+          make O=out vendor/munch_defconfig
+
+          make O=out CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+
+          cp out/arch/arm64/boot/Image ../AnyKernel3/MUNCH-Image
+
+      - name: Create Flashable ZIP
+        run: |
+          cd AnyKernel3
+          zip -r9 "../MUNCH-Image.zip" * -x "*.git*" "*.github*"
+
+      - name: Upload Final Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: MUNCH-Image
+          path: MUNCH-Image.zip
