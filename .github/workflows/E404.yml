@@ -1,0 +1,148 @@
+name: NOSUSFS-Kernel-Build
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      KERNEL_TREE_1:
+        description: 'Kernel Tree'
+        default: 'https://github.com/kvsnr113/xiaomi_sm8250_kernel'
+        required: true
+      KERNEL_TREE_BRANCH_1:
+        description: 'Kernel Tree Branch (NOSUSFS)'
+        default: 'nosusfs'
+        required: false
+        type: choice
+        options:
+          - nosusfs
+      VERSION:
+        description: 'Zip Version'
+        default: '1.0.0'
+        required: false
+      ANYKERNEL_URL:
+        description: 'AnyKernel Url'
+        default: 'https://github.com/kvsnr113/AnyKernel3'
+        required: false
+      CUSTOM_SED:
+        description: 'Custom Kernel Version'
+        default: '-NOSUSFS-1.0.0'
+        required: false
+      CLANG_TOOLCHAIN:
+        description: 'Clang toolchain selection'
+        default: 'neutron'
+        required: true
+        type: choice
+        options:
+          - neutron
+      USE_LTO_THIN:
+        description: 'Use LTO THIN instead of FULL'
+        default: false
+        required: false
+        type: boolean
+      FAST_BUILD:
+        description: 'Enable fast build (skip DTB build)'
+        default: false
+        required: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      UPLOAD_TO_RELEASE: false
+
+    steps:
+      - name: Install Dependencies
+        run: sudo apt install -y flex libncurses6 bison build-essential
+
+      - name: Cache Clang Toolchain
+        uses: actions/cache@v4
+        with:
+          path: clang-neutron
+          key: clang-toolchain-neutron-${{ hashFiles('**/clang-version') }}
+          restore-keys: clang-toolchain-neutron-
+
+      - name: Download & Extract Clang (If not cached)
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          wget https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/10032024/neutron-clang-10032024.tar.zst -O clang.tar.zst
+          mkdir -p clang-neutron
+          unzstd -d clang.tar.zst
+          tar -xf clang.tar -C clang-neutron
+          echo "neutron-10032024" > clang-version
+
+      - name: Set Clang Path
+        run: echo "CLANG_PATH=$(pwd)/clang-neutron/bin" >> $GITHUB_ENV
+
+      - name: Checkout Kernel
+        run: git clone --depth=1 --branch "${{ github.event.inputs.KERNEL_TREE_BRANCH_1 }}" "${{ github.event.inputs.KERNEL_TREE_1 }}" kernel_tree
+
+      - name: Apply Custom Version
+        run: |
+          cd kernel_tree
+          if [[ "${{ github.event.inputs.CUSTOM_SED }}" != "-NOSUSFS-1.0.0" ]]; then
+            sed -i -e "s/CONFIG_LOCALVERSION=\"-NOSUSFS-1.0.0\"/CONFIG_LOCALVERSION=\"${{ github.event.inputs.CUSTOM_SED }}\"/" arch/arm64/configs/vendor/munch_defconfig
+          fi
+
+      - name: Apply LTO Thin
+        if: ${{ github.event.inputs.USE_LTO_THIN }}
+        run: |
+          cd kernel_tree
+          sed -i -e '
+          /CONFIG_ARCH_SUPPORTS_LTO_CLANG_THIN=y/c\CONFIG_ARCH_SUPPORTS_LTO_CLANG_THIN=y
+          /CONFIG_HAS_LTO_CLANG=y/c\CONFIG_HAS_LTO_CLANG=y
+          /# CONFIG_LTO_NONE is not set/c\# CONFIG_LTO_NONE is not set
+          /CONFIG_LTO_CLANG_FULL=y/c\# CONFIG_LTO_CLANG_FULL is not set
+          /# CONFIG_LTO_CLANG_THIN is not set/c\CONFIG_LTO_CLANG_THIN=y
+          ' arch/arm64/configs/vendor/munch_defconfig
+
+      - name: Kernel Build
+        run: |
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=ARM64
+          export KBUILD_BUILD_USER="senx"
+          export KBUILD_BUILD_HOST="ubuntu"
+          cd kernel_tree
+          make O=out vendor/munch_defconfig
+          make O=out CC=clang -j$(nproc --all) CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
+          
+          echo "Listing built files:"
+          ls -lh out/arch/arm64/boot/
+
+          # Move Image
+          cp out/arch/arm64/boot/Image ../Image
+
+          # Move DTB / DTBO only if not FAST_BUILD
+          if [ "${{ github.event.inputs.FAST_BUILD }}" = "false" ]; then
+            if [ -f out/arch/arm64/boot/dtb.img ]; then
+              cp out/arch/arm64/boot/dtb.img ../MUNCH-dtb
+            else
+              echo "⚠️ DTB not found, skipping"
+            fi
+            if [ -f out/arch/arm64/boot/dtbo.img ]; then
+              cp out/arch/arm64/boot/dtbo.img ../MUNCH-dtbo.img
+            else
+              echo "⚠️ DTBO not found, skipping"
+            fi
+          else
+            echo "FAST_BUILD enabled: skipping DTB/DTBO copy"
+          fi
+
+      - name: Prepare AnyKernel3
+        run: |
+          git clone --depth=1 --branch master ${{ github.event.inputs.ANYKERNEL_URL }} AnyKernel3
+          cp ../Image AnyKernel3/
+          if [ -f ../MUNCH-dtb ]; then cp ../MUNCH-dtb AnyKernel3/; fi
+          if [ -f ../MUNCH-dtbo.img ]; then cp ../MUNCH-dtbo.img AnyKernel3/; fi
+
+      - name: Package Kernel
+        run: |
+          cd AnyKernel3
+          zip -r9 ../NOSUSFS-Kernel-${{ github.event.inputs.VERSION }}.zip *
+
+      - name: Upload Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOSUSFS-Kernel-${{ github.event.inputs.VERSION }}
+          path: NOSUSFS-Kernel-${{ github.event.inputs.VERSION }}.zip
