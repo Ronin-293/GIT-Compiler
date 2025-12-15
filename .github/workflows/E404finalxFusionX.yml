@@ -27,18 +27,18 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/SenseiiX/fusionX_sm8250 -b stable-noksu kernel_tree
 
-      - name: Cherry-pick SUSFS-BPF Patch (Auto-Resolve)
+       - name: Cherry-pick SUSFS-BPF Patch (Auto-Resolve)
         run: |
           cd kernel_tree
           git config user.email "bot@example.com"
           git config user.name "Build Bot"
 
           echo "Fetching external repo..."
-          git remote add susfs https://github.com/Kenskuyy-Prjkt/fusionX_sm8250
-          git fetch susfs wip-susfs-bpf
+          git remote add susfs https://github.com/SenX-Private-Space/fusionX_private4
+          git fetch susfs ocuv
 
           echo "Applying cherry-pick..."
-          git cherry-pick 2e62da287ea8c5436f2ca5770d6b3dafcf2c0ccc -X theirs || true
+          git cherry-pick 98876c70b114b84c1b5279eda97856083c4253b0 -X theirs || true
 
           # Auto resolve conflicts (prefer NEW CHANGES)
           if [ -d ".git/rebase-apply" ] || [ -f ".git/CHERRY_PICK_HEAD" ]; then
