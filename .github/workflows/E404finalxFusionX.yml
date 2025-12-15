@@ -1,0 +1,100 @@
+name: Simple-MUNCH-Kernel-Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Dependencies
+        run: sudo apt install flex libncurses6
+
+      - name: Download AOSP Clang 21
+        run: |
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/508ea7dd0d8f681904d0422e98af9613aaabf180/clang-r574158.tar.gz -O clang.tar.gz
+          mkdir -p clang
+          tar -xf clang.tar.gz -C clang
+          echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
+
+      - name: Verify Clang Version
+        run: |
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          clang --version
+
+      - name: Checkout Kernel Tree
+        run: |
+          git clone --depth=1 https://github.com/SenseiiX/fusionX_sm8250 -b stable-noksu kernel_tree
+
+       - name: Cherry-pick SUSFS-BPF Patch (Auto-Resolve)
+        run: |
+          cd kernel_tree
+          git config user.email "bot@example.com"
+          git config user.name "Build Bot"
+
+          echo "Fetching external repo..."
+          git remote add susfs https://github.com/SenX-Private-Space/fusionX_private4
+          git fetch susfs ocuv
+
+          echo "Applying cherry-pick..."
+          git cherry-pick 98876c70b114b84c1b5279eda97856083c4253b0 -X theirs || true
+
+          # Auto resolve conflicts (prefer NEW CHANGES)
+          if [ -d ".git/rebase-apply" ] || [ -f ".git/CHERRY_PICK_HEAD" ]; then
+            echo "Conflicts detected — resolving using THEIR version..."
+            git diff --name-only --diff-filter=U | xargs git checkout --theirs
+            git add .
+            git cherry-pick --continue || git commit -m "Auto-resolved SUSFS-BPF cherry-pick using theirs"
+          fi
+
+          echo "Cherry-pick done with auto-merge."
+          
+      - name: Integrate SukiSU Ultra (non-GKI, no SUSFS, no KPM)
+        run: |
+          cd kernel_tree
+          echo "🔧 Integrating SukiSU Ultra (non-GKI, normal mode)..."
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s nongki    
+
+      - name: Checkout AnyKernel3
+        run: git clone --depth=1 https://github.com/kvsnr113/AnyKernel3 AnyKernel3
+
+      - name: Clean Non-Munch Files from AnyKernel3
+        run: |
+          cd AnyKernel3
+          echo "🧹 Removing non-MUNCH files..."
+          find . -type f ! -name 'Image' ! -name 'MUNCH-Image' ! -name 'MUNCH-dtb' ! -name 'MUNCH-dtbo.img' \
+                 ! -name 'anykernel.sh' ! -path './META-INF/*' -delete
+          echo "Remaining files:"
+          ls -lh
+
+      - name: Build Kernel
+        run: |
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          export ARCH=arm64
+          export SUBARCH=ARM64
+          export KBUILD_BUILD_USER="lordputin"
+          export KBUILD_BUILD_HOST="ubuntu"
+
+          cd kernel_tree
+          make O=out vendor/munch_defconfig
+
+          echo "⚙️ Compiling kernel..."
+          make O=out CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+
+          echo "📁 Output:"
+          ls -lh out/arch/arm64/boot/
+
+          cp out/arch/arm64/boot/Image ../AnyKernel3/MUNCH-Image
+
+      - name: Create Flashable ZIP
+        run: |
+          cd AnyKernel3
+          zip -r9 "../MUNCH-Image.zip" * -x "*.git*" "*.github*"
+          echo "Flashable ZIP created as MUNCH-Image.zip"
+
+      - name: Upload Final Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: MUNCH-Image
+          path: MUNCH-Image.zip
